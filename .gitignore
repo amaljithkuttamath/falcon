@@ -1,0 +1,4 @@
+.chainlit/config.toml
+.chainlit/translations/en-US.json
+.chainlit/translations/pt-BR.json
+venv/*
