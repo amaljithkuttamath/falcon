@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from typing import Any, Dict, Optional, Type
 
-import chainlit as cl
+import streamlit as st
 from langchain.callbacks.manager import (
     AsyncCallbackManagerForToolRun,
     CallbackManagerForToolRun,
@@ -18,6 +18,7 @@ import pandas as pd
 import plotly
 from langchain.pydantic_v1 import BaseModel, Field, root_validator
 from langchain.tools.base import BaseTool
+from langchain.tools import Tool
 
 
 def sanitize_input(query: str) -> str:
@@ -68,13 +69,14 @@ class PlotlyPythonAstREPLTool(BaseTool):
                 "(as it uses new functionality in the `ast` module, "
                 f"you have Python version: {sys.version}"
             )
+
         return values
 
     def send_chart_and_return(self, str):
         print("converting to chart:", str)
         try:
             fig = pio.from_json(str)
-            cl.user_session.set("figure", fig)
+            # st.user_session.set("figure", fig)
             return "Chart successfully sent to the user. Do not show any image in your reply, only present the chart that has been already sent."
         except Exception as e:
             print(e)
