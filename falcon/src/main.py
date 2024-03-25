@@ -8,6 +8,11 @@ import warnings
 from llama_api import query_llama_api
 import threading
 from helpers import get_llm_insights
+import csv_to_sql
+from csv_to_sql import convert_csv_to_sqlite,get_csv_files_in_folder,read_csv_without_header_and_convert_to_sqlite,csv_to_sqlite,query_sqlite
+from dotenv import load_dotenv
+load_dotenv('falcon/src/.env')
+
 
 warnings.filterwarnings("ignore")
 st.set_option("deprecation.showPyplotGlobalUse", False)
@@ -42,6 +47,10 @@ if "datasets" not in st.session_state:
     datasets = {}
     # Preload datasets
     datasets["GRID"] = pd.read_csv("falcon/data/Real_Estate_Sales_2001-2021_GL.csv")
+    #######csv_to_sql#################
+    folder_path =  'falcon/data/'
+    convert_csv_to_sqlite(folder_path)
+    #######csv_to_sql##################
     st.session_state["datasets"] = datasets
 else:
     # use the list already loaded
@@ -49,7 +58,8 @@ else:
 import os
 
 openai_key = ""
-hf_key = os.environ["HUGGINGFACEHUB_API_TOKEN"]
+
+hf_key = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 with st.sidebar:
     # First we want to choose the dataset, but we will fill it with choices once we've loaded one
@@ -63,6 +73,9 @@ with st.sidebar:
             # Read in the data, add it to the list of available datasets. Give it a nice name.
             file_name = uploaded_file.name[:-4].capitalize()
             datasets[file_name] = pd.read_csv(uploaded_file)
+            #################csv_to_sql###################33
+            read_csv_without_header_and_convert_to_sqlite(file_name)
+            #################csv_to_sql###################33
             # We want to default the radio button to the newly added dataset
             index_no = len(datasets) - 1
     except Exception as e:

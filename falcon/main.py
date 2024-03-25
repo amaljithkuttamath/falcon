@@ -1,5 +1,5 @@
 import pandas as pd
-import openai
+
 import streamlit as st
 
 # import streamlit_nested_layout
@@ -40,8 +40,8 @@ else:
     datasets = st.session_state["datasets"]
 import os
 
-openai_key = ""
-hf_key = os.environ["HUGGINGFACEHUB_API_TOKEN"]
+openai_key = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoic2Fuc2FyaSIsImV4cCI6MTc5NjMxMDQ0NH0.FgFpk64W54Uoai0mEv8rZdQtOgaBC7j_pa2Bd7VLJjE"
+hf_key = "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"
 
 with st.sidebar:
     # First we want to choose the dataset, but we will fill it with choices once we've loaded one
