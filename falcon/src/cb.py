@@ -12,9 +12,33 @@ import sqlite3
 from loguru import logger
 import matplotlib.pyplot as plt
 import seaborn as sns
-from st_aggrid import AgGrid, GridOptionsBuilder
 
-st.set_page_config(layout="wide")
+# from st_aggrid import AgGrid, GridOptionsBuilder
+# from code_editor import code_editor
+# from streamlit_extras.app_logo import add_logo
+
+# add_logo("http://placekitten.com/120/120")
+
+st.set_page_config(
+    page_title="Falcon: Talk to your data",
+    page_icon="falcon/src/eagle_1f985.gif",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        "About": "# This is a very cool app!",
+    },
+)
+
+# logo = "falcon/src/eagle_1f985.gif"  # Change this to the path of your logo file
+
+# # If you want to add some text next to the logo
+# col1, col2 = st.columns([1, 4])  # Adjust the ratio based on your preference
+
+# with col1:
+#     st.image(logo, width=100)  # Adjust the width as needed
+
+# with col2:
+#     st.markdown("# Falcon: Talk to your data")  # Adjust the title as needed
 
 
 def query_db_to_dataframe(db_path, sql_query):
@@ -45,9 +69,10 @@ from functools import lru_cache
 @lru_cache(maxsize=None)
 def generate_sql_schema_context(db_path):
     """
-    Generates a textual SQL schema description from an SQLite database, including
-    the top 5 rows of data from each table and additional statistical context
-    like minimum, maximum, and average values for numerical columns.
+    Generates a textual SQL schema description from an SQLite database, including a list of tables,
+    a list of columns for each table, the top 5 rows of data from each table, additional statistical context
+    like minimum, maximum, and average values for numerical columns, a list of up to 10 unique values for all columns
+    (indicating if there are more), and counts of unique values.
 
     Parameters:
     - db_path (str): The path to the SQLite database file.
@@ -65,31 +90,53 @@ def generate_sql_schema_context(db_path):
             if not tables:
                 return "No tables found in the database."
 
-            schema_descriptions = []
+            schema_list = [f"- {table[0]}" for table in tables]
+            schema_list_str = "Tables in the database:\n" + "\n".join(schema_list) + "\n\n"
+
+            schema_descriptions = [schema_list_str]
 
             for table in tables:
                 table_name = table[0]
                 cursor.execute(f"PRAGMA table_info({table_name})")
-                columns = cursor.fetchall()
+                columns_info = cursor.fetchall()
+
+                columns_list = [column[1] for column in columns_info]
+                columns_list_str = "`, `".join([f"`{column}`" for column in columns_list])
+                table_header = f"Table '{table_name}' - Columns: {columns_list_str}"
+                schema_descriptions.append(table_header)
 
                 column_descriptions = []
-                for column in columns:
+                for column in columns_info:
                     column_name = column[1]
                     data_type = column[2]
-                    if data_type in ["INTEGER", "REAL"]:  # Add more numeric types as needed
+
+                    # Fetch unique count for all columns
+                    cursor.execute(f"SELECT COUNT(DISTINCT {column_name}) FROM {table_name}")
+                    unique_count = cursor.fetchone()[0]
+
+                    # Fetch up to 10 unique values for all columns
+                    cursor.execute(f"SELECT DISTINCT {column_name} FROM {table_name} LIMIT 10")
+                    unique_values = cursor.fetchall()
+                    unique_values_str = ", ".join([str(val[0]) for val in unique_values])
+
+                    if data_type in ["INTEGER", "REAL"]:
                         # Fetch statistical data for numerical columns
                         cursor.execute(
                             f"SELECT MIN({column_name}), MAX({column_name}), AVG({column_name}) FROM {table_name}"
                         )
                         min_val, max_val, avg_val = cursor.fetchone()
+                        more_indicator = ", more..." if unique_count > 10 else ""
                         column_descriptions.append(
-                            f"'{column_name}' ({data_type}, min: {min_val}, max: {max_val}, avg: {avg_val:.2f})"
+                            f"'{column_name}' ({data_type}, min: {min_val}, max: {max_val}, avg: {avg_val:.2f}, unique: {unique_count}, sample values: [{unique_values_str}{more_indicator}])"
                         )
                     else:
-                        column_descriptions.append(f"'{column_name}' ({data_type})")
+                        more_indicator = ", more..." if unique_count > 10 else ""
+                        column_descriptions.append(
+                            f"'{column_name}' ({data_type}, unique: {unique_count}, sample values: [{unique_values_str}{more_indicator}])"
+                        )
 
-                table_description = f"Table '{table_name}': columns {', '.join(column_descriptions)}."
-                schema_descriptions.append(table_description)
+                columns_description = "Columns details: " + ", ".join(column_descriptions)
+                schema_descriptions.append(columns_description)
 
                 cursor.execute(f"SELECT * FROM {table_name} LIMIT 5")
                 rows = cursor.fetchall()
@@ -103,7 +150,9 @@ def generate_sql_schema_context(db_path):
                 else:
                     schema_descriptions.append("No data available.")
 
-            schema_context = "\n".join(schema_descriptions)
+                schema_descriptions.append("")  # For better separation in the output
+
+            schema_context = "SCHEMA DESCRIPTION:\n" + "\n".join(schema_descriptions)
 
             logger.info("-" * 100)
             logger.info(schema_context)
@@ -129,24 +178,38 @@ def generate_sql_query(question, db_path):
     """
     schema = generate_sql_schema_context(db_path)
     # Refine the prompt for more clarity and specificity
-    refined_prompt = f"""
-    Given a specific question that requires analysis, generate an SQL query that adheres to the following guidelines:
-    - Directly answers the question: '{question}'
-    - Use schema and details for better context and relevance.
-    - Limits the result to 100 rows to ensure efficiency
-    - Selects only the necessary columns for answering the question, avoiding unnecessary data
-    - Utilizes SQL features such as constraints, aggregations, or conditions to optimize query performance and relevance
-    The query should be concise and focused, enclosed within backticks for clarity. No explanatory text is required; please provide only the SQL query.
+    # refined_prompt = f"""
+    # Given a specific question that requires analysis, generate an SQLite3 query that adheres to the following guidelines:
+    # - Use schema and details for better context and relevance.
+    # - Directly answers the question: '{question}'
+    # - Limits the result to 100 rows to ensure efficiency
+    # - Write simple queries
+    # - Selects only the necessary columns for answering the question, avoiding unnecessary data
+    # - Utilizes SQL features such as constraints, aggregations, or conditions to optimize query performance and relevance
+    # The query should be concise and focused, enclosed within backticks for clarity. No explanatory text is required; please provide only the SQL query.
 
-    Enclose query in backticks.
+    # Enclose SQL query in backticks and separate it from any explanatory text.
 
-    SCHEMA: {schema}
-    """
+    # SCHEMA: {schema}
+    # """
+    refined_prompt = f"""<s>[INST] Given `SCHEMA DESCRIPTION` and  `SCHEMA`: {schema}\n  Task: You are a SQLite expert. Given an input question, first create a syntactically correct SQLite query to run, provided database `SCHEMA`, aimed at answering a specified question. This query should adhere to principles of clarity, efficiency, and relevance, avoiding unnecessary complexity and focusing on extracting the essential data needed for the answer. If the question or schema details are unclear or if pertinent information is missing, prioritize addressing these gaps over formulating an imprecise response. The final query should be concise, optimized for performance, and directly applicable to the question at hand. Responses that do not align with these guidelines or that speculate beyond the available information are not acceptable. <</SYS>>
+
+    [INST] Your specific instructions are:
+    0. USE columns that are available in the `SCHEMA`.
+    1. Construct an `SQLite3` query that directly answers the question: "{question}" with context from `SCHEMA DESCRIPTION`.
+    2. Focus on selecting only the columns necessary to answer the question, also include relavent columns.
+    3. Write simple queries. Aggregate data if required.
+    4. Query small amount of data to ensure efficiency.
+    5. The queried data would be used for further analysis and plotting.
+    6. Dont perform complex queries.
+
+    The query must be presented within backticks (``` ```). [/INST]\n """
     # Query the Llama API
     response = query_llama_api(refined_prompt)
 
     # Attempt to extract the SQL query enclosed in backticks from the response
-    match = re.search(r"`{1,3}\s*(SELECT.*?);?\s*`{1,3}", response, re.DOTALL)
+    match = re.search(r"```(?:sql)?\s*\n([\s\S]*?)\n```", response, re.DOTALL)
+
     if match:
         sql_query = match.group(1).strip()  # Stripping whitespace for clean extraction
         logger.info(sql_query)
@@ -184,7 +247,7 @@ def extract_python_code(response):
         code_block = response[start_idx:end_idx].strip()
         # Split into lines and filter out any line containing `fig.show()` or `pd.read_csv()`
         filtered_lines = [
-            line for line in code_block.split("\n") if "fig.show()" not in line and "pd.read_csv(" not in line
+            line for line in code_block.split("\n") if "fig.show()" not in line and "pd.read_" not in line
         ]
         # Join the lines back into a single string
         return "\n".join(filtered_lines)
@@ -203,27 +266,49 @@ def generate_plotly_chart(df, question, attempt=1, max_attempts=3, last_error=""
         logger.info("Maximum attempts reached. Unable to generate executable code.")
         return None
     # Details about the DataFrame 'df', including column names and types, and a brief on what we're trying to visualize.
+    primer_desc = ""
+    for i in df.columns:
+        if len(df[i].drop_duplicates()) < 20 and df.dtypes[i] == "O":
+            primer_desc = (
+                primer_desc
+                + "\nThe column '"
+                + i
+                + "' has categorical values '"
+                + "','".join(str(x) for x in df[i].drop_duplicates())
+                + "'. "
+            )
+        elif df.dtypes[i] == "int64" or df.dtypes[i] == "float64":
+            primer_desc = (
+                primer_desc + "\nThe column '" + i + "' is type " + str(df.dtypes[i]) + " and contains numeric values. "
+            )
+    primer_desc = (
+        primer_desc + "PERFORM filtering and aggregating on the dataframe. If required by the `QUESTION TO PLOT:`.\n"
+    )
+    primer_desc = primer_desc + "\nLabel the x and y axes appropriately."
     df_info = f"DataFrame 'df' contains columns: {list(df.columns)}. DataFrame shape: {df.shape}. data types: {df.dtypes} infer data context using head: {df.head(5)}"
     question_info = f"QUESTION TO PLOT: {question}"
 
     # Adjust the prompt to be more specific about the expected output and guidelines for code generation.
     prompt = f"""
-    Using the pandas DataFrame structure provided: `{df_info}` use this context to create a Python code snippet with Plotly Express to generate a figure object `fig` visualizing the data as per the specific question: `{question_info}`. The visualization should be straightforward and interactive, focusing directly on the dataset's insights.
+    <s>[INST] <<SYS>> This instruction block is designed to guide the model in generating a Python code snippet for visualizing data from a pandas DataFrame using Plotly Express. The model should adhere to the following guidelines:
+    - Tailor the Python code snippet to the specifics of the DataFrame structure (`{df_info}`) (`{primer_desc}`)and the visualization question (`{question_info}`).
+    - Generate Python code that is executable in a standard Python environment, focusing on creating a straightforward and interactive graph design.
+    - Provide the Python code snippet within triple backtick markers to ensure clarity and immediate usability.
+    - Dont plot on any geo based data.
 
-    The code must:
-    - Be executable in a standard Python environment.
-    - Follow data visualization best practices, ensuring the x and y axes are accurately labeled to reflect the dataset's content.
-    - Maintain simplicity in the graph's design, avoiding overcomplication.
-    - Use Plotly Express for an interactive visualization experience, as shown in the reference code structure:
+    The code snippet should be simple yet effective in visualizing the dataset's insights, making it interactive where possible. The model's output should directly follow the instruction block, encapsulated within a code block formatted as shown below. <</SYS>>
+
         ```
         import plotly.express as px
         fig = px.some_chart_type(df, x='column_x', y='column_y')
         ```
     Adapt this structure to fit the visualization requirements mentioned, ensuring all instructions are contained within a single triple backtick code block for immediate usability.
-    """
 
+    - Only one code block is required.
+    """
+    fig = None
     if last_error:
-        prompt += f"\nPlease correct the code based on this feedback: {last_error}"
+        prompt += "GENERATE NEW CODE BASED ON: " + last_error
 
     resp = query_llama_api(prompt)
     python_code = extract_python_code(resp)
@@ -231,18 +316,19 @@ def generate_plotly_chart(df, question, attempt=1, max_attempts=3, last_error=""
 
     if not is_code_safe(python_code):
         logger.info("Generated code failed safety checks. Trying again...")
-        return generate_plotly_chart(df, attempt + 1, max_attempts, "Code failed safety checks.")
+        return generate_plotly_chart(df, question, attempt + 1, max_attempts, "Code failed safety checks.")
 
     local_namespace = {"df": df, "pd": pd, "px": px}
 
     try:
         exec(python_code, local_namespace)
         fig = local_namespace.get("fig", None)
-        if fig is None:
-            raise ValueError("Figure object 'fig' was not created.")
+        # if fig is None:
+        #     raise ValueError("Figure object 'fig' was not created.")
     except Exception as e:
-        logger.info(f"Error executing generated code: {e}. Trying again...")
-        return generate_plotly_chart(df, attempt + 1, max_attempts, f"Error: {e}")
+        exception_msg = str(e)
+        logger.error(f"generated code:{python_code} Error: {exception_msg}")
+        return generate_plotly_chart(df, question, attempt + 1, max_attempts, "")
 
     return fig
 
@@ -297,48 +383,149 @@ def generate_matplotlib_seaborn_chart(df, attempt=1, max_attempts=3, last_error=
 
 from concurrent.futures import ThreadPoolExecutor
 
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain_community.llms import HuggingFaceHub
+import os
 
 # Streamlit app
-def main():
-    st.title("Real Estate Analysis Chatbot")
 
-    db_path = "falcon/property_data_1.db"
-    user_question = st.text_input("Ask me a question about property data:")
-    logger.info(user_question)
-    if user_question:
-        sql_query = generate_sql_query(user_question, db_path)
-        df = query_db_to_dataframe(db_path, sql_query)
-        # st.write("Here are the top 10 most expensive properties based on your query:")
-        AgGrid(df)
-        # st.plotly_chart(df.plot(), use_container_width=True)
-        # st.pyplot(df.plot())
-        if len(df) > 100:
-            dfx = df.head(100)
+
+def format_response(res):
+    # res = extract_code(res)
+    # Remove the load_csv from the answer if it exists
+    csv_line = res.find("read_csv")
+    if csv_line > 0:
+        return_before_csv_line = res[0:csv_line].rfind("\n")
+        if return_before_csv_line == -1:
+            # The read_csv line is the first line so there is nothing to need before it
+            res_before = ""
         else:
-            dfx = df
-        df_json = dfx.to_json(orient="records", lines=True)
+            res_before = res[0:return_before_csv_line]
+        res_after = res[csv_line:]
+        return_after_csv_line = res_after.find("\n")
+        if return_after_csv_line == -1:
+            # The read_csv is the last line
+            res_after = ""
+        else:
+            res_after = res_after[return_after_csv_line:]
+        res = res_before + res_after
+    start_index = res.find("fig.show()")
+    if start_index != -1:
+        # Find the start of the line
+        line_start = res.rfind("\n", 0, start_index)
+        # Find the end of the line
+        line_end = res.find("\n", start_index)
+        # Remove the line
+        res = res[:line_start] + res[line_end:]
+    return res
 
-        prompt = f"""
-        I have compiled the sales data into the following structured format, where each line represents a record in JSON format:
 
-        {df_json}
+def run_request(question_to_ask):
+    print(question_to_ask)
 
-        Using this data, could you summarize, as a data analyst, in natural language, the answer to the following question: {user_question}
+    # Hugging Face model
+    llm = HuggingFaceHub(
+        huggingfacehub_api_token=os.environ["HUGGINGFACEHUB_API_TOKEN"],
+        repo_id="codellama/" + "CodeLlama-34b-Instruct-hf",
+        model_kwargs={"temperature": 0.1, "max_new_tokens": 500},
+    )
+    llm_prompt = PromptTemplate.from_template(question_to_ask)
+    print(llm_prompt)
+    llm_chain = LLMChain(llm=llm, prompt=llm_prompt)
+    llm_response = llm_chain.predict()
+    # rejig the response
+    llm_response = format_response(llm_response)
+    return llm_response
 
-        Respond in markdown format.
-        """
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_api_call = executor.submit(query_llama_api, prompt)
-            future_chart = executor.submit(generate_plotly_chart, df, user_question)
+def execute_plot_code(code: str):
+    """
+    Executes a string of code that generates a matplotlib plot and returns the figure and axes.
 
-            # Waiting for tasks to complete and capturing results
-            api_response = future_api_call.result()
-            chart = future_chart.result()
+    Args:
+        code (str): The code to execute.
 
-        # Display results in Streamlit
-        st.markdown(api_response)
-        st.plotly_chart(chart)
+    Returns:
+        A tuple containing the matplotlib figure and axes, or None if they were not created.
+    """
+    local_vars = {}
+    exec(code, globals(), local_vars)
+    fig = local_vars.get("fig")
+    ax = local_vars.get("ax")
+    return fig, ax
+
+
+def get_primer_plotly(df_dataset):
+    # Primer function to take a dataframe and its name,
+    # analyze the columns to add descriptions for columns with less than 20 unique values,
+    # and prepare a code snippet for plotting with Plotly Express.
+    primer_desc = (
+        "Use a dataframe called df from data_file.csv with columns '"
+        + "','".join(str(x) for x in df_dataset.columns)
+        + "'. "
+    )
+    primer_desc += df_dataset.head().to_string()
+    # primer_desc += f"\n Memory usage: {df_dataset.memory_usage(deep=True).sum()} bytes"
+    # primer_desc += "\n change datatype of any time / date columns."
+    for i in df_dataset.columns:
+        data_type = df_dataset.dtypes[i]
+        if len(df_dataset[i].drop_duplicates()) < 20:
+            primer_desc += (
+                "\nThe column '"
+                + i
+                + f"' has datatype {data_type} and contains unique values: '"
+                + "','".join(str(x) for x in df_dataset[i].drop_duplicates())
+                + "'. "
+            )
+        # elif df_dataset.dtypes[i] == "int64" or df_dataset.dtypes[i] == "float64":
+        #     primer_desc += (
+        #         "\nThe column '" + i + "' is type " + str(df_dataset.dtypes[i]) + " and contains numeric values. "
+        #     )
+    # primer_desc = (
+    #     primer_desc
+    #     + "if needed, Extract latitude and longitude coordinates from a column containing strings in the format 'POINT (longitude latitude)', and plot the points on a geographical map using Plotly"
+    # )
+    # primer_desc += (
+    #     "PERFORM filtering and aggregating on the dataframe using pandas If required by the `QUESTION TO PLOT:`.\n"
+    # )
+    primer_desc += "\nLabel the x and y axes appropriately."
+    primer_desc += "\nCreate dynamic and interactive visualizations that allow for exploring the dataset visually."
+    primer_desc += " The script should only include code, no comments.\n"
+
+    primer_desc += "QUESTION TO PLOT: `{}`"
+
+    # Primer code for Plotly Express
+    primer_code = "import pandas as pd\nimport plotly.express as px\n"
+
+    # primer_code += "# Plotly graph_objects plot.\n"
+    primer_code += "# code here\n"
+    # primer_code += "# expose fig object dont include `fig.show()` in the code snippet\n"
+    # Example Plotly Express plot (generic placeholder, adjust as needed)
+
+    # primer_code += "fig = px.bar(df, x='[X_COLUMN]', y='[Y_COLUMN]', color='[CATEGORY_COLUMN]', barmode='group')\n"
+    # primer_code += "fig.update_layout(xaxis_title='X Axis Title', yaxis_title='Y Axis Title', title='Plot Title')\n"
+    # primer_code += "fig\n"
+
+    return primer_desc, primer_code
+
+
+def format_question(primer_desc, primer_code, question):
+    primer_desc = primer_desc.format(" ")
+    # Put the question at the end of the description primer within quotes, then add on the code primer.
+    return '"""\n' + primer_desc + question + '\n"""\n' + primer_code
+
+
+def generate_plotly(df, prompt):
+    primer1, primer2 = get_primer_plotly(df)
+    question_to_ask = format_question(primer1, primer2, prompt)
+    answer = run_request(question_to_ask)
+    try:
+        fig, ax = execute_plot_code(answer)
+        return fig
+    except Exception as e:
+        logger.error(e)
+        return None
 
 
 db_path = "falcon/property_data_1.db"
@@ -353,63 +540,70 @@ if prompt := st.chat_input("Your question"):  # Prompt for user input and save t
 for message in st.session_state.messages:  # Display the prior chat messages
     with st.chat_message(message["role"]):
         st.write(message["content"])
-
 # if st.session_state.messages[-1]["role"] != "assistant":
-with st.chat_message("assistant"):
-    with st.spinner("Thinking..."):
-        sql_query = generate_sql_query(prompt, db_path)
-        df = query_db_to_dataframe(db_path, sql_query)
-        # st.write("Here are the top 10 most expensive properties based on your query:")
+if prompt:
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            with st.status("Querying data", expanded=False) as status:
+                sql_query = generate_sql_query(prompt, db_path)
+                st.code(sql_query, language="sql")
+                # code_d = code_editor(sql_query, lang="sql")
+                # logger.info(code_d)
+                # st.code(sql_query, language="sql")
+                df = query_db_to_dataframe(db_path, sql_query)
+                status.update(label="Download complete!", state="complete", expanded=False)
+                # st.write("Here are the top 10 most expensive properties based on your query:")
+            api_response = ""
 
-        if not df.empty:
-            if len(df) > 10:
-                dfx = df.head(10)
-            else:
-                dfx = df
-            df_json = dfx.to_json(orient="records", lines=True)
+            if not df.empty:
+                if len(df) > 50:
+                    dfx = df.head(50)
+                else:
+                    dfx = df
+                df_json = dfx.to_json(orient="records", lines=True)
+                descriptive_stats = df.describe()
+                prompt_summary = f"""
+                I have compiled the top 50 points of data into the following structured format:
 
-            prompt = f"""
-            I have compiled the sales data into the following structured format, where each line represents a record in JSON format:
+                {df_json}
 
-            {df_json}
+                Descriptive statistics:
+                {descriptive_stats}
 
-            Using this data, could you summarize, as a data analyst, in natural language, the answer to the following question: {prompt}
+                Using this data, could you summarize, as a data analyst, in natural language, the answer to the following question: {prompt}
 
-            Respond in markdown format.
-            """
+                Respond in markdown format.
+                """
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_api_call = executor.submit(query_llama_api, prompt)
-                future_chart = executor.submit(generate_plotly_chart, df, prompt)
+                with ThreadPoolExecutor(max_workers=2) as executor:
 
-                # Waiting for tasks to complete and capturing results
-                api_response = future_api_call.result()
-                st.markdown(api_response)
+                    future_api_call = executor.submit(query_llama_api, prompt_summary)
+                    future_chart = executor.submit(generate_plotly, df, prompt)
 
-                gb = GridOptionsBuilder.from_dataframe(df)
-                gb.configure_side_bar()
-                gridoptions = gb.build()
+                    # Waiting for tasks to complete and capturing results
+                    # with st.status("Response Summary", expanded=True) as status:
+                    api_response = future_api_call.result()
+                    st.markdown(api_response)
+                    st.dataframe(df)
+                    # gb = GridOptionsBuilder.from_dataframe(df)
+                    # gb.configure_side_bar()
+                    # gridoptions = gb.build()
 
-                # Mostar AgGrid
-                AgGrid(df, height=400, gridOptions=gridoptions)
-                chart = future_chart.result()
+                    # # Mostar AgGrid
+                    # AgGrid(df, height=200, gridOptions=gridoptions)
+                    chart = future_chart.result()
 
-            # Display results in Streamlit
+                # Display results in Streamlit
 
-            try:
-                st.plotly_chart(chart)
-            except Exception as e:
-                logger.error(f"Error generating plotly chart: {e}.")
-                st.write(df.plot())
+                try:
+                    if chart:
+                        st.plotly_chart(chart)
+                except Exception as e:
+                    logger.error(f"Error plotting plotly chart: {e}.")
+                    st.write(df.plot())
 
-        # message = {"role": "assistant", "content": df}
-        # st.session_state.messages.append(message)
+            message = {"role": "assistant", "content": api_response}
+            st.session_state.messages.append(message)
 
 # if __name__ == "__main__":
 #     main()
-
-
-# echo "https://akuttamath:glpat-G9scD1xR4wyn_3iQFxq4@gitlab.com/sorcero/ai/retrieval-augmented-generation.git" >> ~/.git-credentials
-
-
-# https://gitlab.com/sorcero/ai/retrieval-augmented-generation.git
