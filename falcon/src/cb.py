@@ -21,7 +21,7 @@ import seaborn as sns
 
 st.set_page_config(
     page_title="Falcon: Talk to your data",
-    page_icon="falcon/src/eagle_1f985.gif",
+    page_icon="🦅",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
@@ -29,16 +29,21 @@ st.set_page_config(
     },
 )
 
-# logo = "falcon/src/eagle_1f985.gif"  # Change this to the path of your logo file
+logo = "falcon/src/eagle_1f985.gif"  # Change this to the path of your logo file
 
-# # If you want to add some text next to the logo
-# col1, col2 = st.columns([1, 4])  # Adjust the ratio based on your preference
+title = "Falcon: Talk to your data"
+subtitle = "An interactive data visualization and analysis tool."
 
-# with col1:
-#     st.image(logo, width=100)  # Adjust the width as needed
 
-# with col2:
-#     st.markdown("# Falcon: Talk to your data")  # Adjust the title as needed
+# Display Header
+col1, col2 = st.columns([1, 4])  # Adjust the ratio based on your preference
+
+with col1:
+    st.image(logo, width=100)  # Adjust the width as needed
+
+with col2:
+    st.markdown(f"# {title}")
+    st.markdown(f"### {subtitle}")
 
 
 def query_db_to_dataframe(db_path, sql_query):
@@ -64,6 +69,7 @@ def query_db_to_dataframe(db_path, sql_query):
 import sqlite3
 
 from functools import lru_cache
+import json
 
 
 @lru_cache(maxsize=None)
@@ -80,90 +86,57 @@ def generate_sql_schema_context(db_path):
     Returns:
     - str: A formatted string describing the database schema and sample data.
     """
+
     try:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
 
-            cursor.execute("SELECT tbl_name FROM sqlite_master WHERE type='table'")
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
             tables = cursor.fetchall()
 
             if not tables:
                 return "No tables found in the database."
 
-            schema_list = [f"- {table[0]}" for table in tables]
-            schema_list_str = "Tables in the database:\n" + "\n".join(schema_list) + "\n\n"
-
-            schema_descriptions = [schema_list_str]
+            schema_descriptions = []
 
             for table in tables:
                 table_name = table[0]
+                schema_descriptions.append(f"Table: {table_name}\n")
+
                 cursor.execute(f"PRAGMA table_info({table_name})")
                 columns_info = cursor.fetchall()
 
-                columns_list = [column[1] for column in columns_info]
-                columns_list_str = "`, `".join([f"`{column}`" for column in columns_list])
-                table_header = f"Table '{table_name}' - Columns: {columns_list_str}"
-                schema_descriptions.append(table_header)
+                for column_info in columns_info:
+                    col_name, col_type = column_info[1], column_info[2]
+                    schema_descriptions.append(f"Column: {col_name}, Type: {col_type}")
 
-                column_descriptions = []
-                for column in columns_info:
-                    column_name = column[1]
-                    data_type = column[2]
-
-                    # Fetch unique count for all columns
-                    cursor.execute(f"SELECT COUNT(DISTINCT {column_name}) FROM {table_name}")
-                    unique_count = cursor.fetchone()[0]
-
-                    # Fetch up to 10 unique values for all columns
-                    cursor.execute(f"SELECT DISTINCT {column_name} FROM {table_name} LIMIT 10")
-                    unique_values = cursor.fetchall()
-                    unique_values_str = ", ".join([str(val[0]) for val in unique_values])
-
-                    if data_type in ["INTEGER", "REAL"]:
-                        # Fetch statistical data for numerical columns
-                        cursor.execute(
-                            f"SELECT MIN({column_name}), MAX({column_name}), AVG({column_name}) FROM {table_name}"
-                        )
+                    if col_type in ["INTEGER", "REAL"]:
+                        cursor.execute(f"SELECT MIN({col_name}), MAX({col_name}), AVG({col_name}) FROM {table_name}")
                         min_val, max_val, avg_val = cursor.fetchone()
-                        more_indicator = ", more..." if unique_count > 10 else ""
-                        column_descriptions.append(
-                            f"'{column_name}' ({data_type}, min: {min_val}, max: {max_val}, avg: {avg_val:.2f}, unique: {unique_count}, sample values: [{unique_values_str}{more_indicator}])"
-                        )
-                    else:
-                        more_indicator = ", more..." if unique_count > 10 else ""
-                        column_descriptions.append(
-                            f"'{column_name}' ({data_type}, unique: {unique_count}, sample values: [{unique_values_str}{more_indicator}])"
+                        avg_val_str = f"{avg_val:.2f}" if avg_val is not None else "N/A"
+                        schema_descriptions.append(
+                            f"Stats for {col_name} - Min: {min_val}, Max: {max_val}, Avg: {avg_val_str}"
                         )
 
-                columns_description = "Columns details: " + ", ".join(column_descriptions)
-                schema_descriptions.append(columns_description)
+                    cursor.execute(f"SELECT DISTINCT {col_name} FROM {table_name} LIMIT 10")
+                    unique_vals = cursor.fetchall()
+                    unique_vals_str = ", ".join(str(val[0]) for val in unique_vals) + (
+                        "..." if len(unique_vals) == 10 else ""
+                    )
+                    cursor.execute(f"SELECT COUNT(DISTINCT {col_name}) FROM {table_name}")
+                    unique_count = cursor.fetchone()[0]
+                    schema_descriptions.append(
+                        f"Unique values in {col_name}: {unique_count} (Sample: {unique_vals_str})"
+                    )
 
-                cursor.execute(f"SELECT * FROM {table_name} LIMIT 5")
-                rows = cursor.fetchall()
-
-                if rows:
-                    rows_descriptions = ["Top 5 rows:"]
-                    for row in rows:
-                        row_description = ", ".join([str(cell) for cell in row])
-                        rows_descriptions.append(f"({row_description})")
-                    schema_descriptions.extend(rows_descriptions)
-                else:
-                    schema_descriptions.append("No data available.")
-
-                schema_descriptions.append("")  # For better separation in the output
-
-            schema_context = "SCHEMA DESCRIPTION:\n" + "\n".join(schema_descriptions)
-
-            logger.info("-" * 100)
-            logger.info(schema_context)
-            logger.info("-" * 100)
-
-            return schema_context
+                schema_descriptions.append("")
+            logger.info(schema_descriptions)
+            return "\n".join(schema_descriptions)
     except sqlite3.Error as e:
         return f"An error occurred: {e}"
 
 
-def generate_sql_query(question, db_path):
+def generate_sql_query(question, db_path, previous_code=None, error_reason=None):
     """
     Generates an SQL query using the Llama API based on a given question and SQL schema.
     The function now includes a more specific prompt to ensure the SQL query is
@@ -191,19 +164,55 @@ def generate_sql_query(question, db_path):
     # Enclose SQL query in backticks and separate it from any explanatory text.
 
     # SCHEMA: {schema}
+
+    #     1. **Use Schema Columns**: Only use columns from the available `Column_Name`.
+    # 2. **Answer the QUESTION**: Your query should directly answer the specified QUESTION.
+    # 3. **Ready for Analysis**: The data you query will be used for further analysis and plotting, ensure you inlcude all necessary columns.
+    # 4. **Avoid Complex Queries**: Do not craft overly complex queries.
+    # 5. **Small Data Queries**: Ensure your query pulls a small amount of data [less than 100 rows] for efficiency.
+    # Sample values are just for you to have context.
+    # Dont perform unnecessary aggregations.
+
     # """
-    refined_prompt = f"""<s>[INST] Given `SCHEMA DESCRIPTION` and  `SCHEMA`: {schema}\n  Task: You are a SQLite expert. Given an input question, first create a syntactically correct SQLite query to run, provided database `SCHEMA`, aimed at answering a specified question. This query should adhere to principles of clarity, efficiency, and relevance, avoiding unnecessary complexity and focusing on extracting the essential data needed for the answer. If the question or schema details are unclear or if pertinent information is missing, prioritize addressing these gaps over formulating an imprecise response. The final query should be concise, optimized for performance, and directly applicable to the question at hand. Responses that do not align with these guidelines or that speculate beyond the available information are not acceptable. <</SYS>>
+    ## Works
+    # refined_prompt = f"""[INST] Task: You're an expert in `SQLite3` queries. Your objective is to create a precise `SQLite3` query, based on the provided database `SCHEMA`, to effectively address a given question.[/INST]
 
-    [INST] Your specific instructions are:
-    0. USE columns that are available in the `SCHEMA`.
-    1. Construct an `SQLite3` query that directly answers the question: "{question}" with context from `SCHEMA DESCRIPTION`.
-    2. Focus on selecting only the columns necessary to answer the question, also include relavent columns.
-    3. Write simple queries. Aggregate data if required.
-    4. Query small amount of data to ensure efficiency.
-    5. The queried data would be used for further analysis and plotting.
-    6. Dont perform complex queries.
+    # [INST] Instructions:
 
-    The query must be presented within backticks (``` ```). [/INST]\n """
+    # -Use `SQLite3` dialect for query generation.
+    # - Use schema and details for better context and relevance.
+    # -Direct Answer: Ensure your query directly addresses the QUESTION.
+    # -Analysis Ready: Include all necessary columns for analysis.
+    # -Keep it Simple: Craft straightforward queries for clarity.
+    # -Efficient Retrieval: Retrieve fewer than 100 rows.
+
+    # GIVEN: {schema}
+
+    # QUESTION: ```{question}```
+
+    # Please present your `SQLite3` QUERY within backticks (``` ```) to clearly indicate it as a code snippet. [/INST]
+    # """
+
+    refined_prompt = f"""[INST] Task: You're an expert in `SQLite3` queries. Your objective is to create a `SQLite3` query, based on the provided database `SCHEMA`, to effectively address a given question.[/INST]
+
+    [INST] Instructions:
+    - Use `SQLite3` dialect for query generation.
+    - Use schema and details for better context and relevance.
+    - Direct Answer: Ensure your query directly addresses the QUESTION.
+    - Keep it Simple: Craft straightforward queries for clarity.
+    - Efficient Retrieval: Retrieve fewer than 100 rows.
+    - Dont perform more than `two AND conditions`.
+
+    GIVEN: {schema}
+
+    QUESTION: ```{question}```
+
+    Please present your `SQLite3` QUERY within backticks (``` ```) to clearly indicate it as a code snippet. [/INST]
+    """
+
+    if previous_code and error_reason:
+        refined_prompt += f"\n\nPrevious Attempt:\n```sql\n{previous_code}\n```\nError Reason: {error_reason}. Please correct the query based on this feedback."
+
     # Query the Llama API
     response = query_llama_api(refined_prompt)
 
@@ -528,82 +537,251 @@ def generate_plotly(df, prompt):
         return None
 
 
-db_path = "falcon/property_data_1.db"
+db_directory = "uploaded_databases"
+if not os.path.exists(db_directory):
+    os.makedirs(db_directory)
 
 
-if "messages" not in st.session_state.keys():  # Initialize the chat message history
-    st.session_state.messages = []
+def preprocess_column_names(df):
+    """Preprocess DataFrame column names: lowercase, remove special characters, replace spaces with underscores."""
+    df.columns = [re.sub(r"\W+", "", column).lower().replace(" ", "_") for column in df.columns]
+    return df
 
-if prompt := st.chat_input("Your question"):  # Prompt for user input and save to chat history
-    st.session_state.messages.append({"role": "user", "content": prompt})
 
-for message in st.session_state.messages:  # Display the prior chat messages
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
-# if st.session_state.messages[-1]["role"] != "assistant":
-if prompt:
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            with st.status("Querying data", expanded=False) as status:
-                sql_query = generate_sql_query(prompt, db_path)
-                st.code(sql_query, language="sql")
-                # code_d = code_editor(sql_query, lang="sql")
-                # logger.info(code_d)
-                # st.code(sql_query, language="sql")
-                df = query_db_to_dataframe(db_path, sql_query)
-                status.update(label="Download complete!", state="complete", expanded=False)
-                # st.write("Here are the top 10 most expensive properties based on your query:")
-            api_response = ""
+def csv_to_sqlite(csv_file, db_path, table_name=None):
+    """Convert CSV file to SQLite database with preprocessed column names."""
+    try:
+        df = pd.read_csv(csv_file)
+        print(df.head())
+        if df.empty:
+            st.error("The uploaded CSV file is empty.")
+            return
 
-            if not df.empty:
-                if len(df) > 50:
-                    dfx = df.head(50)
-                else:
-                    dfx = df
-                df_json = dfx.to_json(orient="records", lines=True)
-                descriptive_stats = df.describe()
-                prompt_summary = f"""
-                I have compiled the top 50 points of data into the following structured format:
+        df = preprocess_column_names(df)
+        print(df.head())
+        if table_name is None:
+            # Use the CSV file name (without extension) as table name if not provided
+            table_name = os.path.splitext(os.path.basename(csv_file.name))[0]
 
-                {df_json}
+        conn = sqlite3.connect(db_path)
+        df.to_sql(table_name, conn, if_exists="replace", index=False)
+        conn.close()
+        st.success(f"Data from {csv_file.name} uploaded successfully to table {table_name} in the database.")
+    except pd.errors.EmptyDataError:
+        st.error("The uploaded CSV file is empty or not in the expected format.")
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
 
-                Descriptive statistics:
-                {descriptive_stats}
 
-                Using this data, could you summarize, as a data analyst, in natural language, the answer to the following question: {prompt}
+import glob
 
-                Respond in markdown format.
-                """
+# Predefined list of databases with paths
+predefined_databases_paths = ["falcon/real_estate_transactions_pandas.db"]
 
-                with ThreadPoolExecutor(max_workers=2) as executor:
+# Extract just the filenames for display
+predefined_databases = [os.path.basename(path) for path in predefined_databases_paths]
 
-                    future_api_call = executor.submit(query_llama_api, prompt_summary)
-                    future_chart = executor.submit(generate_plotly, df, prompt)
+# Path where the uploaded databases will be stored
+db_directory = "uploaded_databases"
+if not os.path.exists(db_directory):
+    os.makedirs(db_directory)
 
-                    # Waiting for tasks to complete and capturing results
-                    # with st.status("Response Summary", expanded=True) as status:
-                    api_response = future_api_call.result()
-                    st.markdown(api_response)
-                    st.dataframe(df)
-                    # gb = GridOptionsBuilder.from_dataframe(df)
-                    # gb.configure_side_bar()
-                    # gridoptions = gb.build()
+# Dynamically list databases in the `uploaded_databases` directory, only filenames
+uploaded_databases_filenames = [os.path.basename(path) for path in glob.glob(os.path.join(db_directory, "*.db"))]
 
-                    # # Mostar AgGrid
-                    # AgGrid(df, height=200, gridOptions=gridoptions)
-                    chart = future_chart.result()
+# Combine the predefined databases with the uploaded ones, only filenames
+available_databases = predefined_databases + uploaded_databases_filenames
 
-                # Display results in Streamlit
 
-                try:
-                    if chart:
-                        st.plotly_chart(chart)
-                except Exception as e:
-                    logger.error(f"Error plotting plotly chart: {e}.")
-                    st.write(df.plot())
+# Function to map selected filename back to its full path
+def get_full_path(filename):
+    if filename in predefined_databases:
+        return predefined_databases_paths[predefined_databases.index(filename)]
+    else:
+        return os.path.join(db_directory, filename)
 
-            message = {"role": "assistant", "content": api_response}
-            st.session_state.messages.append(message)
+
+def get_table_names(db_path):
+    """Retrieve a list of all table names in the specified SQLite database."""
+    query = "SELECT name FROM sqlite_master WHERE type='table'"
+    df_tables = query_db_to_dataframe(db_path, query)
+    return df_tables["name"].tolist()
+
+
+# Upload CSV and convert to SQLite database from the sidebar
+uploaded_file = st.sidebar.file_uploader("Upload a CSV file to convert to SQLite", type=["csv"])
+if uploaded_file is not None:
+    # Define the path for the new SQLite database, customizing the name as needed
+    db_path = os.path.join(db_directory, uploaded_file.name.replace(".csv", ".db"))
+
+    # (Assuming the preprocessing and csv_to_sqlite functions are defined here)
+
+    # Convert the uploaded CSV to SQLite
+    csv_to_sqlite(uploaded_file, db_path)
+    st.sidebar.success(f"Database created successfully at {db_path}")
+
+    # Refresh the available databases list
+    uploaded_databases_filenames = [os.path.basename(path) for path in glob.glob(os.path.join(db_directory, "*.db"))]
+    available_databases = predefined_databases + uploaded_databases_filenames
+
+# Database selection in sidebar, showing only filenames
+selected_db_filename = st.sidebar.selectbox("Select a database:", available_databases)
+
+# Get the full path of the selected database
+selected_db_path = get_full_path(selected_db_filename)
+
+
+# Function to map selected filename back to its full path
+def get_full_path(filename):
+    if filename in predefined_databases:
+        return predefined_databases_paths[predefined_databases.index(filename)]
+    else:
+        return os.path.join(db_directory, filename)
+
+
+# Check if a database has been selected before proceeding
+if not selected_db_path:
+    st.warning("Please select a database from the sidebar before proceeding.")
+else:
+    # dfx = query_db_to_dataframe(db_path, f"SELECT * FROM {get_table_names(db_path)} LIMIT 5")
+    # print("---------------------------")
+    # print(dfx)
+    # print("---------------------------")
+    # st.dataframe(dfx.head())
+
+    if "messages" not in st.session_state.keys():  # Initialize the chat message history
+        st.session_state.messages = []
+
+    if prompt := st.chat_input("Your question"):  # Prompt for user input and save to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+    for message in st.session_state.messages:  # Display the prior chat messages
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+    # if st.session_state.messages[-1]["role"] != "assistant":
+
+    if prompt:
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                # with st.status("Querying data", expanded=False) as status:
+                #     sql_query = generate_sql_query(prompt, db_path)
+                #     st.code(sql_query, language="sql")
+                #     # code_d = code_editor(sql_query, lang="sql")
+                #     # logger.info(code_d)
+                #     # st.code(sql_query, language="sql")
+                #     df = query_db_to_dataframe(db_path, sql_query)
+                #     status.update(label="Download complete!", state="complete", expanded=False)
+                success = False
+                with st.status("Querying data", expanded=False) as status:
+                    # Initialize variables for attempts and success flag.
+                    max_attempts = 3
+                    attempt = 0
+
+                    # The initial SQL query is generated based on the user prompt and database path.
+                    sql_query = generate_sql_query(prompt, selected_db_path)
+
+                    while attempt < max_attempts and not success:
+                        try:
+                            # Display the SQL query in the Streamlit app for each attempt.
+                            st.code(sql_query, language="sql")
+
+                            # Attempt to query the database and store results in a DataFrame.
+                            df = query_db_to_dataframe(selected_db_path, sql_query)
+                            success = True  # Update success flag if query is successful.
+                            status.update(label="Download complete!", state="complete", expanded=False)
+                        except Exception as e:
+                            attempt += 1  # Increment attempt counter.
+                            logger.error(f"Attempt {attempt} with query failed: {e}")  # Log the error.
+
+                            if attempt < max_attempts:
+                                sql_query = generate_sql_query(
+                                    prompt,
+                                    previous_code=sql_query,
+                                    error_reason=f"Attempt {attempt} with query failed: {e}",
+                                    db_path=selected_db_path,
+                                )
+                                st.warning("Trying again with a different query...")
+                                try:
+                                    # Attempt the query with the new SQL query.
+                                    st.code(sql_query, language="sql")
+                                    df = query_db_to_dataframe(selected_db_path, sql_query)
+                                    success = True  # Update success flag if new query is successful.
+                                    status.update(
+                                        label="Download complete with alternative query!",
+                                        state="complete",
+                                        expanded=False,
+                                    )
+                                except Exception as e:
+                                    # Log the error if the new query also fails.
+                                    logger.error(f"Alternative query attempt failed: {e}")
+                                    break
+
+                    # st.write("Here are the top 10 most expensive properties based on your query:")
+                api_response = ""
+                if success:
+                    if not df.empty:
+                        # Limit the data to the top 50 records for analysis if the DataFrame has more than 50 rows.
+                        dfx = df.head(50) if len(df) > 50 else df
+
+                        # Convert the limited DataFrame to a JSON string for structured data representation.
+                        df_json = dfx.to_json(orient="records", lines=True)
+
+                        # Generate descriptive statistics for the entire DataFrame to summarize the data.
+                        descriptive_stats = df.describe().to_string()
+
+                        # Prepare the data summary and descriptive statistics for presentation.
+                        data_summary = f"""
+                        The query resulted in a selection of the top 50 data points, which are structured as follows: {df_json}.
+                        Here are the descriptive statistics of the entire dataset:
+                        {descriptive_stats}
+                        """
+
+                    else:
+                        data_summary = "No data found."
+
+                    # Format the prompt to summarize the query results in a professional tone, excluding raw data tables.
+                    prompt_summary = f"""
+                    Based on the data obtained from the query "{sql_query}", here is a summary:
+
+                    {data_summary}
+
+                    Please provide a natural language summary answering the following question: {prompt}
+                    This summary is prepared in the tone of a professional data analyst, focusing on key insights and findings without delving into raw data details.
+                    Use only data that is relevant to the question. and dont make up any irrelevant information.
+                    """
+
+                    prompt_summary = prompt_summary.strip()
+                    future_chart = None
+
+                    try:
+                        with ThreadPoolExecutor(max_workers=2) as executor:
+                            # Submitting task for API call
+                            future_api_call = executor.submit(query_llama_api, prompt_summary)
+
+                            # Submitting task for chart generation if DataFrame is not empty
+                            if not df.empty:
+                                future_chart = executor.submit(generate_plotly, df, prompt)
+
+                            # Display status updates while waiting for tasks to complete
+                            with st.container():
+                                with st.spinner("Generating summary, please wait..."):
+                                    # Waiting for API response task to complete and displaying results
+                                    api_response = future_api_call.result()
+                                    st.markdown(api_response)
+                                    st.dataframe(df)
+
+                                    # Conditional execution of chart rendering based on future_chart's state
+                                    if future_chart is not None:
+                                        chart = future_chart.result()
+                                        if chart:
+                                            st.plotly_chart(chart)
+
+                    except Exception as e:
+                        logger.error(f"Error plotting plotly chart: {e}.")
+                        st.write(df.plot())
+
+                message = {"role": "assistant", "content": api_response}
+                st.session_state.messages.append(message)
 
 # if __name__ == "__main__":
 #     main()
