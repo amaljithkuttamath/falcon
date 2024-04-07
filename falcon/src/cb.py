@@ -1,23 +1,24 @@
-import streamlit as st
-from llama_api import query_llama_api
+import glob
+import json
+import os
 
 # Mock functions (for complete examples, implement the logic)
 import re  # Import regular expression module for parsing
-
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 
-import pandas as pd
-import sqlite3
-
-from loguru import logger
 import matplotlib.pyplot as plt
+import pandas as pd
+import plotly.express as px
 import seaborn as sns
+import streamlit as st
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain_community.llms import HuggingFaceHub
+from llama_api import query_llama_api
+from loguru import logger
 
-# from st_aggrid import AgGrid, GridOptionsBuilder
-# from code_editor import code_editor
-# from streamlit_extras.app_logo import add_logo
-
-# add_logo("http://placekitten.com/120/120")
 
 st.set_page_config(
     page_title="Falcon: Talk to your data",
@@ -29,7 +30,7 @@ st.set_page_config(
     },
 )
 
-logo = "falcon/src/eagle_1f985.gif"  # Change this to the path of your logo file
+# logo = "falcon/src/eagle_1f985.gif"  # Change this to the path of your logo file
 
 title = "Falcon: Talk to your data"
 subtitle = "An interactive data visualization and analysis tool."
@@ -38,8 +39,8 @@ subtitle = "An interactive data visualization and analysis tool."
 # Display Header
 col1, col2 = st.columns([1, 4])  # Adjust the ratio based on your preference
 
-with col1:
-    st.image(logo, width=100)  # Adjust the width as needed
+# with col1:
+#     st.image("🦅", width=50)  # Adjust the width as needed
 
 with col2:
     st.markdown(f"# {title}")
@@ -66,27 +67,8 @@ def query_db_to_dataframe(db_path, sql_query):
     return df
 
 
-import sqlite3
-
-from functools import lru_cache
-import json
-
-
 @lru_cache(maxsize=None)
 def generate_sql_schema_context(db_path):
-    """
-    Generates a textual SQL schema description from an SQLite database, including a list of tables,
-    a list of columns for each table, the top 5 rows of data from each table, additional statistical context
-    like minimum, maximum, and average values for numerical columns, a list of up to 10 unique values for all columns
-    (indicating if there are more), and counts of unique values.
-
-    Parameters:
-    - db_path (str): The path to the SQLite database file.
-
-    Returns:
-    - str: A formatted string describing the database schema and sample data.
-    """
-
     try:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
@@ -103,6 +85,7 @@ def generate_sql_schema_context(db_path):
                 table_name = table[0]
                 schema_descriptions.append(f"Table: {table_name}\n")
 
+                # Since PRAGMA table_info does not support parameter substitution, ensure table_name is safe.
                 cursor.execute(f"PRAGMA table_info({table_name})")
                 columns_info = cursor.fetchall()
 
@@ -111,29 +94,43 @@ def generate_sql_schema_context(db_path):
                     schema_descriptions.append(f"Column: {col_name}, Type: {col_type}")
 
                     if col_type in ["INTEGER", "REAL"]:
-                        cursor.execute(f"SELECT MIN({col_name}), MAX({col_name}), AVG({col_name}) FROM {table_name}")
+                        cursor.execute(
+                            f"SELECT MIN({col_name}), MAX({col_name}), AVG({col_name}) FROM {table_name}"
+                        )
                         min_val, max_val, avg_val = cursor.fetchone()
                         avg_val_str = f"{avg_val:.2f}" if avg_val is not None else "N/A"
                         schema_descriptions.append(
                             f"Stats for {col_name} - Min: {min_val}, Max: {max_val}, Avg: {avg_val_str}"
                         )
 
-                    cursor.execute(f"SELECT DISTINCT {col_name} FROM {table_name} LIMIT 10")
+                    cursor.execute(
+                        f"SELECT DISTINCT {col_name} FROM {table_name} LIMIT 10"
+                    )
                     unique_vals = cursor.fetchall()
                     unique_vals_str = ", ".join(str(val[0]) for val in unique_vals) + (
                         "..." if len(unique_vals) == 10 else ""
                     )
-                    cursor.execute(f"SELECT COUNT(DISTINCT {col_name}) FROM {table_name}")
+                    cursor.execute(
+                        f"SELECT COUNT(DISTINCT {col_name}) FROM {table_name}"
+                    )
                     unique_count = cursor.fetchone()[0]
                     schema_descriptions.append(
                         f"Unique values in {col_name}: {unique_count} (Sample: {unique_vals_str})"
                     )
 
                 schema_descriptions.append("")
-            logger.info(schema_descriptions)
             return "\n".join(schema_descriptions)
     except sqlite3.Error as e:
+        raise e
         return f"An error occurred: {e}"
+
+def better_query(question, db_path):
+    schema = generate_sql_schema_context(db_path)
+    refined_prompt =f""" Question: ```{question}``` Enhance the users query with the context: `{schema}`
+    Respond only with the modified or enhanced question in under 100 words."""
+    response = query_llama_api(refined_prompt)
+    print(response)
+
 
 
 def generate_sql_query(question, db_path, previous_code=None, error_reason=None):
@@ -150,6 +147,7 @@ def generate_sql_query(question, db_path, previous_code=None, error_reason=None)
     - str: The extracted SQL query, or an error message if the extraction fails or the request is unsuccessful.
     """
     schema = generate_sql_schema_context(db_path)
+    question_m = better_query(question, db_path)
     # Refine the prompt for more clarity and specificity
     # refined_prompt = f"""
     # Given a specific question that requires analysis, generate an SQLite3 query that adheres to the following guidelines:
@@ -192,20 +190,17 @@ def generate_sql_query(question, db_path, previous_code=None, error_reason=None)
 
     # Please present your `SQLite3` QUERY within backticks (``` ```) to clearly indicate it as a code snippet. [/INST]
     # """
-
-    refined_prompt = f"""[INST] Task: You're an expert in `SQLite3` queries. Your objective is to create a `SQLite3` query, based on the provided database `SCHEMA`, to effectively address a given question.[/INST]
+    logger.info(schema)
+    refined_prompt = f"""[INST] Task: You're a data analyst and an expert in `SQLite3` queries. 
+    Your objective is to create a `SQLite3` query, based on the provided `SCHEMA`, 
+    to effectively query related data to a given question.[/INST]
 
     [INST] Instructions:
     - Use `SQLite3` dialect for query generation.
-    - Use schema and details for better context and relevance.
-    - Direct Answer: Ensure your query directly addresses the QUESTION.
-    - Keep it Simple: Craft straightforward queries for clarity.
-    - Efficient Retrieval: Retrieve fewer than 100 rows.
-    - Dont perform more than `two AND conditions`.
+ 
+    SCHEMA: ```{schema}```
 
-    GIVEN: {schema}
-
-    QUESTION: ```{question}```
+    QUESTION: ```{question_m}```
 
     Please present your `SQLite3` QUERY within backticks (``` ```) to clearly indicate it as a code snippet. [/INST]
     """
@@ -225,9 +220,6 @@ def generate_sql_query(question, db_path, previous_code=None, error_reason=None)
         return sql_query  # Extract the SQL query
     else:
         return "No SQL query generated or query not enclosed in backticks."
-
-
-import plotly.express as px
 
 
 def extract_python_code(response):
@@ -256,7 +248,9 @@ def extract_python_code(response):
         code_block = response[start_idx:end_idx].strip()
         # Split into lines and filter out any line containing `fig.show()` or `pd.read_csv()`
         filtered_lines = [
-            line for line in code_block.split("\n") if "fig.show()" not in line and "pd.read_" not in line
+            line
+            for line in code_block.split("\n")
+            if "fig.show()" not in line and "pd.read_" not in line
         ]
         # Join the lines back into a single string
         return "\n".join(filtered_lines)
@@ -288,10 +282,16 @@ def generate_plotly_chart(df, question, attempt=1, max_attempts=3, last_error=""
             )
         elif df.dtypes[i] == "int64" or df.dtypes[i] == "float64":
             primer_desc = (
-                primer_desc + "\nThe column '" + i + "' is type " + str(df.dtypes[i]) + " and contains numeric values. "
+                primer_desc
+                + "\nThe column '"
+                + i
+                + "' is type "
+                + str(df.dtypes[i])
+                + " and contains numeric values. "
             )
     primer_desc = (
-        primer_desc + "PERFORM filtering and aggregating on the dataframe. If required by the `QUESTION TO PLOT:`.\n"
+        primer_desc
+        + "PERFORM filtering and aggregating on the dataframe. If required by the `QUESTION TO PLOT:`.\n"
     )
     primer_desc = primer_desc + "\nLabel the x and y axes appropriately."
     df_info = f"DataFrame 'df' contains columns: {list(df.columns)}. DataFrame shape: {df.shape}. data types: {df.dtypes} infer data context using head: {df.head(5)}"
@@ -325,7 +325,9 @@ def generate_plotly_chart(df, question, attempt=1, max_attempts=3, last_error=""
 
     if not is_code_safe(python_code):
         logger.info("Generated code failed safety checks. Trying again...")
-        return generate_plotly_chart(df, question, attempt + 1, max_attempts, "Code failed safety checks.")
+        return generate_plotly_chart(
+            df, question, attempt + 1, max_attempts, "Code failed safety checks."
+        )
 
     local_namespace = {"df": df, "pd": pd, "px": px}
 
@@ -356,7 +358,9 @@ def generate_matplotlib_seaborn_chart(df, attempt=1, max_attempts=3, last_error=
     # The plot should be created using Matplotlib without calling 'plt.show()'.
     """.strip()
 
-    error_feedback = f"\n\nFeedback from last attempt: {last_error}" if last_error else ""
+    error_feedback = (
+        f"\n\nFeedback from last attempt: {last_error}" if last_error else ""
+    )
     prompt = (
         f"""{primer_code}
     Given a pandas DataFrame 'df' with the sample data as follows: {df.head()}, and its shape: {df.shape}, 
@@ -372,7 +376,9 @@ def generate_matplotlib_seaborn_chart(df, attempt=1, max_attempts=3, last_error=
 
     if not is_code_safe(python_code):
         logger.info("Generated code failed safety checks. Trying again...")
-        return generate_matplotlib_seaborn_chart(df, attempt + 1, max_attempts, "Code failed safety checks.")
+        return generate_matplotlib_seaborn_chart(
+            df, attempt + 1, max_attempts, "Code failed safety checks."
+        )
 
     local_namespace = {"df": df, "pd": pd, "plt": plt, "sns": sns}
 
@@ -383,21 +389,13 @@ def generate_matplotlib_seaborn_chart(df, attempt=1, max_attempts=3, last_error=
             raise ValueError("Matplotlib figure 'plt' was not properly configured.")
     except Exception as e:
         logger.info(f"Error executing generated code: {e}. Trying again...")
-        return generate_matplotlib_seaborn_chart(df, attempt + 1, max_attempts, f"Error: {e}")
+        return generate_matplotlib_seaborn_chart(
+            df, attempt + 1, max_attempts, f"Error: {e}"
+        )
 
     # Instead of returning fig, since Matplotlib does not use a figure object in the same way as Plotly,
     # we ensure the current figure is returned or properly saved within the exec scope.
     return fig
-
-
-from concurrent.futures import ThreadPoolExecutor
-
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
-from langchain_community.llms import HuggingFaceHub
-import os
-
-# Streamlit app
 
 
 def format_response(res):
@@ -537,70 +535,6 @@ def generate_plotly(df, prompt):
         return None
 
 
-db_directory = "uploaded_databases"
-if not os.path.exists(db_directory):
-    os.makedirs(db_directory)
-
-
-def preprocess_column_names(df):
-    """Preprocess DataFrame column names: lowercase, remove special characters, replace spaces with underscores."""
-    df.columns = [re.sub(r"\W+", "", column).lower().replace(" ", "_") for column in df.columns]
-    return df
-
-
-def csv_to_sqlite(csv_file, db_path, table_name=None):
-    """Convert CSV file to SQLite database with preprocessed column names."""
-    try:
-        df = pd.read_csv(csv_file)
-        print(df.head())
-        if df.empty:
-            st.error("The uploaded CSV file is empty.")
-            return
-
-        df = preprocess_column_names(df)
-        print(df.head())
-        if table_name is None:
-            # Use the CSV file name (without extension) as table name if not provided
-            table_name = os.path.splitext(os.path.basename(csv_file.name))[0]
-
-        conn = sqlite3.connect(db_path)
-        df.to_sql(table_name, conn, if_exists="replace", index=False)
-        conn.close()
-        st.success(f"Data from {csv_file.name} uploaded successfully to table {table_name} in the database.")
-    except pd.errors.EmptyDataError:
-        st.error("The uploaded CSV file is empty or not in the expected format.")
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
-
-
-import glob
-
-# Predefined list of databases with paths
-predefined_databases_paths = ["falcon/real_estate_transactions_pandas.db"]
-
-# Extract just the filenames for display
-predefined_databases = [os.path.basename(path) for path in predefined_databases_paths]
-
-# Path where the uploaded databases will be stored
-db_directory = "uploaded_databases"
-if not os.path.exists(db_directory):
-    os.makedirs(db_directory)
-
-# Dynamically list databases in the `uploaded_databases` directory, only filenames
-uploaded_databases_filenames = [os.path.basename(path) for path in glob.glob(os.path.join(db_directory, "*.db"))]
-
-# Combine the predefined databases with the uploaded ones, only filenames
-available_databases = predefined_databases + uploaded_databases_filenames
-
-
-# Function to map selected filename back to its full path
-def get_full_path(filename):
-    if filename in predefined_databases:
-        return predefined_databases_paths[predefined_databases.index(filename)]
-    else:
-        return os.path.join(db_directory, filename)
-
-
 def get_table_names(db_path):
     """Retrieve a list of all table names in the specified SQLite database."""
     query = "SELECT name FROM sqlite_master WHERE type='table'"
@@ -608,35 +542,117 @@ def get_table_names(db_path):
     return df_tables["name"].tolist()
 
 
-# Upload CSV and convert to SQLite database from the sidebar
+def preprocess_column_names(df):
+    """Preprocess DataFrame column names: lowercase, remove special characters, replace spaces with underscores."""
+    df.columns = [
+        re.sub(r"\W+", "", column).lower().replace(" ", "_") for column in df.columns
+    ]
+    return df
+
+
+def sanitize_table_name(table_name):
+    """Sanitize the table name to ensure it's a valid SQL table name."""
+    # Replace invalid characters with an underscore
+    sanitized_name = re.sub(r"[^a-zA-Z0-9_]", "_", table_name)
+    # Ensure the table name does not start with a digit
+    if re.match(r"^\d", sanitized_name):
+        sanitized_name = "_" + sanitized_name
+    return sanitized_name
+
+
+def csv_to_sqlite(csv_file, db_path, table_name=None):
+    """
+    Convert a CSV file to a SQLite database with preprocessed column names.
+    
+    :param csv_file: Streamlit UploadedFile object or file path as str.
+    :param db_path: Path to the SQLite database file where the table will be created.
+    :param table_name: Optional; name of the table to create/replace in the database.
+    """
+    try:
+        # Check if csv_file is a filepath (str) or an UploadedFile object
+        if isinstance(csv_file, str):
+            df = pd.read_csv(csv_file)
+        else:
+            # Read directly from the UploadedFile object
+            df = pd.read_csv(csv_file)
+
+        if df.empty:
+            st.error("The uploaded CSV file is empty.")
+            return
+
+        # Preprocess column names
+        df = preprocess_column_names(df)
+
+        # Determine the table name if not provided
+        if table_name is None:
+            base_name = os.path.basename(csv_file.name) if not isinstance(csv_file, str) else os.path.basename(csv_file)
+            table_name = os.path.splitext(base_name)[0]
+            table_name = sanitize_table_name(table_name)
+
+        # Save the DataFrame to an SQLite table
+        with sqlite3.connect(db_path) as conn:
+            df.to_sql(table_name, conn, if_exists='replace', index=False)
+
+        st.success(f"Data uploaded successfully to table {table_name} in the database.")
+
+    except pd.errors.EmptyDataError:
+        st.error("The uploaded CSV file is empty or not in the expected format.")
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+
+
+class DatabaseManager:
+    def __init__(self, upload_directory="uploaded_databases", predefined_db_paths=None):
+        self.upload_directory = upload_directory
+        self.predefined_db_paths = predefined_db_paths or []
+        self.ensure_directory_exists(self.upload_directory)
+
+    @staticmethod
+    def ensure_directory_exists(directory):
+        """Ensure the target directory exists."""
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+
+    def get_uploaded_databases(self):
+        """Retrieve filenames of databases uploaded by the user."""
+        search_pattern = os.path.join(self.upload_directory, "*.db")
+        return [os.path.basename(path) for path in glob.glob(search_pattern)]
+
+    def get_available_databases(self):
+        """Combine predefined databases with uploaded ones, returning only filenames."""
+        predefined_databases = [os.path.basename(path) for path in self.predefined_db_paths]
+        uploaded_databases = self.get_uploaded_databases()
+        return predefined_databases + uploaded_databases
+
+    def get_full_path(self, filename):
+        """Map a selected filename back to its full path."""
+        if filename in [os.path.basename(path) for path in self.predefined_db_paths]:
+            return self.predefined_db_paths[[os.path.basename(path) for path in self.predefined_db_paths].index(filename)]
+        else:
+            return os.path.join(self.upload_directory, filename)
+
+    def handle_csv_upload(self, uploaded_file):
+        """Process an uploaded CSV file, converting it to a SQLite database."""
+        if uploaded_file is not None:
+            db_path = os.path.join(self.upload_directory, uploaded_file.name.replace(".csv", ".db"))
+            # Assuming csv_to_sqlite is a predefined function
+            csv_to_sqlite(uploaded_file, db_path)
+            st.sidebar.success(f"Database created successfully at {db_path}")
+
+# Initialize the DatabaseManager with predefined databases
+predefined_databases_paths = ["falcon/real_estate_transactions_pandas.db"]
+db_manager = DatabaseManager(predefined_db_paths=predefined_databases_paths)
+
+# Streamlit UI for uploading CSV
 uploaded_file = st.sidebar.file_uploader("Upload a CSV file to convert to SQLite", type=["csv"])
-if uploaded_file is not None:
-    # Define the path for the new SQLite database, customizing the name as needed
-    db_path = os.path.join(db_directory, uploaded_file.name.replace(".csv", ".db"))
+db_manager.handle_csv_upload(uploaded_file)
 
-    # (Assuming the preprocessing and csv_to_sqlite functions are defined here)
-
-    # Convert the uploaded CSV to SQLite
-    csv_to_sqlite(uploaded_file, db_path)
-    st.sidebar.success(f"Database created successfully at {db_path}")
-
-    # Refresh the available databases list
-    uploaded_databases_filenames = [os.path.basename(path) for path in glob.glob(os.path.join(db_directory, "*.db"))]
-    available_databases = predefined_databases + uploaded_databases_filenames
-
-# Database selection in sidebar, showing only filenames
+# Refresh and display the available databases for selection
+available_databases = db_manager.get_available_databases()
 selected_db_filename = st.sidebar.selectbox("Select a database:", available_databases)
 
-# Get the full path of the selected database
-selected_db_path = get_full_path(selected_db_filename)
-
-
-# Function to map selected filename back to its full path
-def get_full_path(filename):
-    if filename in predefined_databases:
-        return predefined_databases_paths[predefined_databases.index(filename)]
-    else:
-        return os.path.join(db_directory, filename)
+# Get the full path for the selected database
+selected_db_path = db_manager.get_full_path(selected_db_filename)
 
 
 # Check if a database has been selected before proceeding
@@ -652,7 +668,9 @@ else:
     if "messages" not in st.session_state.keys():  # Initialize the chat message history
         st.session_state.messages = []
 
-    if prompt := st.chat_input("Your question"):  # Prompt for user input and save to chat history
+    if prompt := st.chat_input(
+        "Your question"
+    ):  # Prompt for user input and save to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
     for message in st.session_state.messages:  # Display the prior chat messages
@@ -663,6 +681,7 @@ else:
     if prompt:
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
+                logger.info(selected_db_path)
                 # with st.status("Querying data", expanded=False) as status:
                 #     sql_query = generate_sql_query(prompt, db_path)
                 #     st.code(sql_query, language="sql")
@@ -687,11 +706,19 @@ else:
 
                             # Attempt to query the database and store results in a DataFrame.
                             df = query_db_to_dataframe(selected_db_path, sql_query)
-                            success = True  # Update success flag if query is successful.
-                            status.update(label="Download complete!", state="complete", expanded=False)
+                            success = (
+                                True  # Update success flag if query is successful.
+                            )
+                            status.update(
+                                label="Download complete!",
+                                state="complete",
+                                expanded=False,
+                            )
                         except Exception as e:
                             attempt += 1  # Increment attempt counter.
-                            logger.error(f"Attempt {attempt} with query failed: {e}")  # Log the error.
+                            logger.error(
+                                f"Attempt {attempt} with query failed: {e}"
+                            )  # Log the error.
 
                             if attempt < max_attempts:
                                 sql_query = generate_sql_query(
@@ -704,7 +731,9 @@ else:
                                 try:
                                     # Attempt the query with the new SQL query.
                                     st.code(sql_query, language="sql")
-                                    df = query_db_to_dataframe(selected_db_path, sql_query)
+                                    df = query_db_to_dataframe(
+                                        selected_db_path, sql_query
+                                    )
                                     success = True  # Update success flag if new query is successful.
                                     status.update(
                                         label="Download complete with alternative query!",
@@ -713,7 +742,9 @@ else:
                                     )
                                 except Exception as e:
                                     # Log the error if the new query also fails.
-                                    logger.error(f"Alternative query attempt failed: {e}")
+                                    logger.error(
+                                        f"Alternative query attempt failed: {e}"
+                                    )
                                     break
 
                     # st.write("Here are the top 10 most expensive properties based on your query:")
@@ -756,11 +787,15 @@ else:
                     try:
                         with ThreadPoolExecutor(max_workers=2) as executor:
                             # Submitting task for API call
-                            future_api_call = executor.submit(query_llama_api, prompt_summary)
+                            future_api_call = executor.submit(
+                                query_llama_api, prompt_summary
+                            )
 
                             # Submitting task for chart generation if DataFrame is not empty
                             if not df.empty:
-                                future_chart = executor.submit(generate_plotly, df, prompt)
+                                future_chart = executor.submit(
+                                    generate_plotly, df, prompt
+                                )
 
                             # Display status updates while waiting for tasks to complete
                             with st.container():
